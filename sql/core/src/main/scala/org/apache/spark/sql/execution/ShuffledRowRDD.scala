@@ -30,17 +30,17 @@ sealed trait ShufflePartitionSpec
 
 // A partition that reads data of one or more reducers, from `startReducerIndex` (inclusive) to
 // `endReducerIndex` (exclusive).
-case class CoalescedPartitionSpec(
+case class CoalescedPartitionSpec( // only for CoalesceShufflePartitions + OptimizeSkewedJoin Rule
   startReducerIndex: Int, endReducerIndex: Int) extends ShufflePartitionSpec
 
 // A partition that reads partial data of one reducer, from `startMapIndex` (inclusive) to
 // `endMapIndex` (exclusive).
-case class PartialReducerPartitionSpec(
+case class PartialReducerPartitionSpec( // only for OptimizeSkewedJoin Rule
   reducerIndex: Int, startMapIndex: Int, endMapIndex: Int) extends ShufflePartitionSpec
 
 // A partition that reads partial data of one mapper, from `startReducerIndex` (inclusive) to
 // `endReducerIndex` (exclusive).
-case class PartialMapperPartitionSpec(
+case class PartialMapperPartitionSpec( // only for OptimizeLocalShuffleReader Rule
   mapIndex: Int, startReducerIndex: Int, endReducerIndex: Int) extends ShufflePartitionSpec
 
 /**

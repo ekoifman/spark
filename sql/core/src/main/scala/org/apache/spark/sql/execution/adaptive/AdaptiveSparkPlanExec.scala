@@ -101,9 +101,15 @@ case class AdaptiveSparkPlanExec(
     CoalesceShufflePartitions(context.session),
     // The following two rules need to make use of 'CustomShuffleReaderExec.partitionSpecs'
     // added by `CoalesceShufflePartitions`. So they must be executed after it.
-    OptimizeSkewedJoin(conf),
-    OptimizeLocalShuffleReader(conf)
-  )
+    OptimizeSkewedJoin(conf)
+    ) ++
+    (if ( conf.adaptiveForceIfShuffle ) {
+      Seq(ensureRequirements)
+    } else {
+      Seq.empty
+    }
+    ) :+ OptimizeLocalShuffleReader(conf)
+
 
   // A list of physical optimizer rules to be applied right after a new stage is created. The input
   // plan to these rules has exchange as its root node.
@@ -221,6 +227,8 @@ case class AdaptiveSparkPlanExec(
         val (newPhysicalPlan, newLogicalPlan) = reOptimize(logicalPlan)
         val origCost = costEvaluator.evaluateCost(currentPhysicalPlan)
         val newCost = costEvaluator.evaluateCost(newPhysicalPlan)
+        // could convert some Join to BHJ based on new stats.  What else?
+        // is there short-circuit behavior if something produces 0 rows?
         if (newCost < origCost ||
             (newCost == origCost && currentPhysicalPlan != newPhysicalPlan)) {
           logOnLevel(s"Plan changed from $currentPhysicalPlan to $newPhysicalPlan")

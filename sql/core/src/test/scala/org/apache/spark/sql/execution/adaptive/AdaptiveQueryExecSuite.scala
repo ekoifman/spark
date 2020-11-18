@@ -598,7 +598,9 @@ class AdaptiveQueryExecSuite
       SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
       SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
       SQLConf.SKEW_JOIN_SKEWED_PARTITION_THRESHOLD.key -> "100",
-      SQLConf.ADVISORY_PARTITION_SIZE_IN_BYTES.key -> "100") {
+      SQLConf.ADVISORY_PARTITION_SIZE_IN_BYTES.key -> "100"
+      // , SQLConf.ADAPTIVE_FORCE_IF_SHUFFLE.key -> "true"
+    ) {
       withTempView("skewData1", "skewData2") {
         spark
           .range(0, 1000, 1, 10)

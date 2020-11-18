@@ -257,6 +257,7 @@ case class OptimizeSkewedJoin(conf: SQLConf) extends Rule[SparkPlan] {
     }
 
     val shuffleStages = collectShuffleStages(plan)
+    val s = ExplainUtils.getAQELogPrefix(shuffleStages)
 
     if (shuffleStages.length == 2) {
       // When multi table join, there will be too many complex combination to consider.
@@ -267,18 +268,25 @@ case class OptimizeSkewedJoin(conf: SQLConf) extends Rule[SparkPlan] {
       //   Sort
       //     Shuffle
       val optimizePlan = optimizeSkewJoin(plan)
-      val numShuffles = ensureRequirements.apply(optimizePlan).collect {
+      val executedPlan = ensureRequirements.apply(optimizePlan)
+      val numShuffles = executedPlan.collect {
         case e: ShuffleExchangeExec => e
       }.length
 
-      if (numShuffles > 0) {
-        logDebug("OptimizeSkewedJoin rule is not applied due" +
-          " to additional shuffles will be introduced.")
+      if (numShuffles > 0 && !conf.adaptiveForceIfShuffle) {
+        logInfo(s"OptimizeSkewedJoin: rule is not applied due" +
+          s" to additional shuffles will be introduced. numShuffles=$numShuffles; $s")
         plan
       } else {
+        logInfo(s"OptimizeSkewedJoin: rule is applied." +
+          s" Additional shuffles may be introduced. numShuffles=$numShuffles; $s")
         optimizePlan
       }
     } else {
+      if (shuffleStages.length > 2) {
+        logInfo(s"OptimizeSkewedJoin: rule is not applied since" +
+          s" shuffleStages.length=${shuffleStages.length} <> 2; $s")
+      }
       plan
     }
   }
