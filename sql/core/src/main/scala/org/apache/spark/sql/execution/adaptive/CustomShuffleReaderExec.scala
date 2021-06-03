@@ -86,17 +86,22 @@ case class CustomShuffleReaderExec private(
     }
     Iterator(desc)
   }
+  private def isCoalesced(spec: ShufflePartitionSpec) = coalesceRange(spec) > 1
+  /**
+   * How many partitions were coalesced; 0 if not [[CoalescedPartitionSpec]]
+   */
+  private def coalesceRange(spec: ShufflePartitionSpec) = spec match {
+    // special case for shuffle from empty RDD; SPARK-35239
+    case CoalescedPartitionSpec(0, 0, _) => conf.defaultNumShufflePartitions
+    case s: CoalescedPartitionSpec => s.endReducerIndex - s.startReducerIndex
+    case _ => 0
+  }
 
   /**
    * Returns true iff some non-empty partitions were combined
    */
   def hasCoalescedPartition: Boolean = {
-    partitionSpecs.exists {
-      // shuffle from empty RDD
-      case CoalescedPartitionSpec(0, 0, _) => true
-      case s: CoalescedPartitionSpec => s.endReducerIndex - s.startReducerIndex > 1
-      case _ => false
-    }
+    partitionSpecs.exists(isCoalesced)
   }
 
   def hasSkewedPartition: Boolean =
@@ -150,6 +155,18 @@ case class CustomShuffleReaderExec private(
       driverAccumUpdates += (skewedSplits.id -> numSplits)
     }
 
+    if (hasCoalescedPartition) {
+      val numCoalescedPartitionsMetric = metrics("numCoalescedPartitions")
+      val x = partitionSpecs.count(isCoalesced)
+      numCoalescedPartitionsMetric.set(x)
+      driverAccumUpdates += numCoalescedPartitionsMetric.id -> x
+
+      val numPartitionsToCoalesceMetric = metrics("numPartitionsToCoalesce")
+      val y = partitionSpecs.filter(isCoalesced).foldLeft(0)((c, s) => c + coalesceRange(s))
+      numPartitionsToCoalesceMetric.set(y)
+      driverAccumUpdates += numPartitionsToCoalesceMetric.id -> y
+    }
+
     partitionDataSizes.foreach { dataSizes =>
       val partitionDataSizeMetrics = metrics("partitionDataSize")
       driverAccumUpdates ++= dataSizes.map(partitionDataSizeMetrics.id -> _)
@@ -179,6 +196,19 @@ case class CustomShuffleReaderExec private(
               SQLMetrics.createMetric(sparkContext, "number of skewed partition splits"))
         } else {
           Map.empty
+        }
+      } ++ {
+        if (isLocalReader) {
+          Map.empty
+        } else {
+          if (hasCoalescedPartition) {
+            Map("numCoalescedPartitions" ->
+              SQLMetrics.createMetric(sparkContext, "number of coalesced partitions"),
+              "numPartitionsToCoalesce" ->
+                SQLMetrics.createMetric(sparkContext, "number of partitions to coalesce"))
+          } else {
+            Map.empty
+          }
         }
       }
     } else {

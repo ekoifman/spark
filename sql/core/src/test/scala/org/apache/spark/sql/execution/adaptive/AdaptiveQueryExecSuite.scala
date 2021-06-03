@@ -927,8 +927,10 @@ class AdaptiveQueryExecSuite
       assert(!reader.hasSkewedPartition)
       assert(reader.hasCoalescedPartition)
       assert(reader.metrics.keys.toSeq.sorted == Seq(
-        "numPartitions", "partitionDataSize"))
+        "numCoalescedPartitions", "numPartitions", "numPartitionsToCoalesce", "partitionDataSize"))
+      assert(reader.metrics("numCoalescedPartitions").value == 1)
       assert(reader.metrics("numPartitions").value == reader.partitionSpecs.length)
+      assert(reader.metrics("numPartitionsToCoalesce").value == 5)
       assert(reader.metrics("partitionDataSize").value > 0)
 
       withSQLConf(SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "80") {
