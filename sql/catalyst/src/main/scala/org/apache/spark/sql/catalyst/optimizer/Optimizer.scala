@@ -105,6 +105,7 @@ abstract class Optimizer(catalogManager: CatalogManager)
         ReorderJoin,
         EliminateOuterJoin,
         PushDownPredicates,
+        InferAntiJoin,
         PushDownLeftSemiAntiJoin,
         PushLeftSemiLeftAntiThroughJoin,
         OptimizeJoinCondition,
@@ -279,6 +280,7 @@ abstract class Optimizer(catalogManager: CatalogManager)
   /**
    * Defines rules that cannot be excluded from the Optimizer even if they are specified in
    * SQL config "excludedRules".
+   *
    *
    * Implementations of this class can override this method if necessary. The rule batches
    * that eventually run in the Optimizer, i.e., returned by [[batches]], will be
@@ -2189,6 +2191,122 @@ object EliminateOffsets extends Rule[LogicalPlan] {
   }
 }
 
+/**
+ * Useful discussion on NOT IN() [NullAwareAntiJoin] vs NOT EXISTS()
+ * https://github.com/substrait-io/substrait/issues/325
+ * Semantics are not always intuitive.  Today, Prism use cannot specify either.
+ *
+ * This rules starts with Left Outer Join.
+ * LOJ with isNull filter, nulls as well as empty sets (on either side) - semantics are clear
+ * AntiJoin behavior matches.
+ *
+ * In the simplest case this expects select L.* from L LOJ R on l1 = r1 where r1 is null.
+ * Also, select L.* from L LOJ (select s1 as r1, s2 as r2 from S) R on l1 = r1 where r2 is null.
+ *
+ * The implementation is not comprehensive but is meant to address the cases we commonly see
+ * in practice.
+ *
+ * This runs before AntiJoin pushdown rules but after PushDownPredicates and EliminateOuterJoin
+ * Thus the Filter should not have any strong predicates using  1 Side only.
+ * Predicate strong on the inners side attr would cause LOJ to IJ conversion.
+ * "L LOJ R ON ... where L.a + R.b > 5 and R.c is null" - this would
+ * become IJ because the predicate is string in a and b.
+ * "L LOJ R ON ... where L.a + R.b is null and R.c is null" - both remain above the join
+ * As currently implemented, this will not infer the antijoin though it could and retain
+ * the "L.a + R.b is null" filter
+ *
+ * "L LOJ R ON L.a1 = R.a1 AND L.a2 = R.a2 where rhsJoinKey is null" will be handled iff
+ * rhsJoinKey matches andy of RHS keys in the ON clause.  Multiple "is null" conditions in the
+ * WHERE will not allow conversion (for simplicity - I don't see that pattern in prod)
+ */
+object InferAntiJoin extends Rule[LogicalPlan]  with AliasHelper with PredicateHelper {
+  private def suitableFilter(filterCondition: Expression,
+                             outerChild: LogicalPlan,
+                             innerChild: LogicalPlan,
+                             onClauseCond: Expression): Boolean = {
+    // checks if two expressions are on opposite sides of the join
+    def fromDifferentSides(x: Expression, y: Expression): Boolean = {
+      def fromLeftRight(x: Expression, y: Expression) =
+        !x.references.isEmpty && x.references.subsetOf(outerChild.outputSet) &&
+          !y.references.isEmpty && y.references.subsetOf(innerChild.outputSet)
+      fromLeftRight(x, y) || fromLeftRight(y, x)
+    }
+    def suitableEqualTo(eqCond: EqualTo): Boolean = {
+      if (!fromDifferentSides(eqCond.left, eqCond.right)) {
+        return false
+      }
+      val rhsJoinKey = if (eqCond.left.references.subsetOf(outerChild.outputSet)) {
+        eqCond.right
+      } else {
+        eqCond.left
+      }
+      def matchesByAlias(aMap: AttributeMap[Alias], child: Expression) = {
+        val newChild = replaceAlias(child, aMap)
+        val newKey = replaceAlias(rhsJoinKey, aMap)
+        newKey.semanticEquals(newChild)
+      }
+      rhsJoinKey match {
+        case e: Expression if e.nullIntolerant =>
+          filterCondition match {
+            /* "rhsJoinKey == child" comparison doesn't work since AttributeReference.nullable is
+             true after the LOJ but not necessarily before;
+             The "if" ensures it's not something like "L.a + R.b is null" since AJ doesn't
+             output any RHS columns */
+            case IsNull(child: Expression) if child.references.subsetOf(innerChild.outputSet) =>
+              innerChild match {
+                case p : Project =>
+                  matchesByAlias(getAliasMap(p), child)
+                case a: Aggregate =>
+                  // after CollapseProject Aggregate may define aliases
+                  matchesByAlias(getAliasMap(a), child)
+                case _ =>
+                  rhsJoinKey.semanticEquals(child)
+              }
+            case _ => false
+          }
+        case _ => false
+      }
+    }
+
+    val eqConditions = splitConjunctivePredicates(onClauseCond)
+    def suitableExpression(onClauseExpr: Expression): (Boolean, Boolean) = onClauseExpr match {
+      case e: EqualTo => (true, suitableEqualTo(e))
+      case _ => (false, false)
+    }
+    // atLeastOneIsSuitable because all are NullIntolerant
+    val (allConjunctsAreEqualTo, atLeastOneIsSuitable) =
+      eqConditions.tail.foldLeft(suitableExpression(eqConditions.head))((accum, nextExpr) => {
+      val(a, b) = suitableExpression(nextExpr)
+      (accum._1 && a, accum._2 || b)
+    })
+    allConjunctsAreEqualTo && atLeastOneIsSuitable
+  }
+
+  def apply(plan: LogicalPlan): LogicalPlan = {
+    if (SQLConf.get.getConf(SQLConf.INFER_ANTI_JOIN)) {
+      plan transformDown {
+        case p@Project(_, Filter(filterCondition,
+        j@Join(lChild, rChild: LogicalPlan, LeftOuter, Some(onClause: Expression), _))) if
+          // nothing from RHS of the join is used above the filter
+          p.references.intersect(rChild.outputSet).isEmpty &&
+            suitableFilter(filterCondition, lChild, rChild, onClause) =>
+          p.copy(child = j.copy(joinType = LeftAnti))
+        // for some reason Filter.outputset has all inputs as outputs even though
+        // Project/Aggregate above it only outputs LHS... This is true even after ColumnPruning.
+        // Spark seems to only do it at Project and Aggregate.
+        case op@Aggregate(_, _, Filter(filterCondition,
+        j@Join(lChild, rChild: LogicalPlan, LeftOuter, Some(onClause: Expression), _)), _) if
+          op.references.intersect(rChild.outputSet).isEmpty &&
+            suitableFilter(filterCondition, lChild, rChild, onClause) =>
+          op.copy(child = j.copy(joinType = LeftAnti))
+
+        // todo: Right Outer - is it worth it? Does our UI support ROJ?
+      }
+    } else {
+      plan
+    }
+  }
+}
 /**
  * Check if there any cartesian products between joins of any type in the optimized plan tree.
  * Throw an error if a cartesian product is found without an explicit cross join specified.

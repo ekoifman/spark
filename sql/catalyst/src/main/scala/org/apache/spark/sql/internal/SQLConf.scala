@@ -5333,6 +5333,15 @@ object SQLConf {
       .booleanConf
       .createWithDefault(false)
 
+  val INFER_ANTI_JOIN =
+    buildConf("spark.sql.optimizer.infer.antijoin")
+      .internal()
+      .doc("Optimizer Rule that looks for Left Outer Join followed by IsNull filter" +
+        " which can be rewritten as AntiJoin")
+      .version("3.1.x")
+      .booleanConf
+      .createWithDefault(true)
+
   val LEGACY_COMPLEX_TYPES_TO_STRING =
     buildConf("spark.sql.legacy.castComplexTypesToString.enabled")
       .internal()
