@@ -309,12 +309,16 @@ class InferAntiJoinSQLSuite extends QueryTest
     }
   }
 
-  def reuseExchangeCase(R: Dataset[Long], S: Dataset[Long], T: Dataset[Long]): Int = {
+  def reuseExchangeCase(R: Dataset[Long],
+                        S: Dataset[Long],
+                        T: Dataset[Long],
+                        pushThroughUnion: Boolean): Int = {
     withSQLConf(
       SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> "false",
       SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
       // to test with Shuffle joins
-      SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1") {
+      SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+      SQLConf.PUSH_LEFT_SEMI_ANTI_THROUGH_UNION.key -> pushThroughUnion.toString) {
 
       val df = R.alias("R").selectExpr("id", "id as r1")
         .union(S.alias("S").selectExpr("id", "id as s1"))
@@ -331,8 +335,11 @@ class InferAntiJoinSQLSuite extends QueryTest
     val S = spark.range(3)
     val T = spark.range(4)
 
-    val v = reuseExchangeCase(R, S, T)
-    assert(v == 1, "Unexpected number of ReusedExchange")
+    for( pushThroughUnion <- Seq(true, false)) {
+      val v = reuseExchangeCase(R, S, T, pushThroughUnion)
+      val numExpectedReuseExch = if (pushThroughUnion) 1 else 0
+      assert(v == numExpectedReuseExch, "Unexpected number of ReusedExchange")
+    }
   }
 
   test("push through union with reuse 2") {
@@ -340,15 +347,21 @@ class InferAntiJoinSQLSuite extends QueryTest
     val S = spark.range(2)
     val T = spark.range(4)
 
-    val v = reuseExchangeCase(R, S, T)
-    assert(v == 2, "Unexpected number of ReusedExchange")
+    for( pushThroughUnion <- Seq(true, false)) {
+      val v = reuseExchangeCase(R, S, T, pushThroughUnion)
+      val numExpectedReuseExch = if (pushThroughUnion) 2 else 0
+      assert(v == numExpectedReuseExch, "Unexpected number of ReusedExchange")
+    }
   }
   test("push through union with reuse 3") {
     val R = spark.range(2)
     val S = spark.range(2)
     val T = spark.range(2)
 
-    val v = reuseExchangeCase(R, S, T)
-    assert(v == 3, "Unexpected number of ReusedExchange")
+    for( pushThroughUnion <- Seq(true, false)) {
+      val v = reuseExchangeCase(R, S, T, pushThroughUnion)
+      val numExpectedReuseExch = if (pushThroughUnion) 3 else 0
+      assert(v == numExpectedReuseExch, "Unexpected number of ReusedExchange")
+    }
   }
 }

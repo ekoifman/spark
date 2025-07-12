@@ -5342,6 +5342,16 @@ object SQLConf {
       .booleanConf
       .createWithDefault(true)
 
+  val PUSH_LEFT_SEMI_ANTI_THROUGH_UNION =
+    buildConf("spark.sql.optimizer.pushLeftSemiAntiThroughUnion")
+      .internal()
+      .doc("Used to disable push of Left Anti/Semi join through union since this causes " +
+        "replication of the join operator for each leg of the Union and can adversely affect " +
+        "performance of the query especially if the join is a Sort Merge join with a large RHS")
+      .version("3.1.x")
+      .booleanConf
+      .createWithDefault(true)
+
   val LEGACY_COMPLEX_TYPES_TO_STRING =
     buildConf("spark.sql.legacy.castComplexTypesToString.enabled")
       .internal()
